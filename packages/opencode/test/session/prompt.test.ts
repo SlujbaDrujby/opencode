@@ -674,6 +674,44 @@ it.instance("loop surfaces content-filter finishes as session errors", () =>
   }),
 )
 
+it.instance("loop auto-continues with a synthetic prompt after a generation error", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+
+    yield* llm.error(400, { error: { message: "invalid request" } })
+    yield* llm.text("recovered")
+
+    const result = yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      parts: [{ type: "text", text: "hello" }],
+    })
+
+    expect(result.info.role).toBe("assistant")
+    if (result.info.role !== "assistant") return
+    expect(result.info.error).toBeUndefined()
+    expect(result.parts).toEqual(expect.arrayContaining([expect.objectContaining({ type: "text", text: "recovered" })]))
+    expect(yield* llm.hits).toHaveLength(2)
+
+    const msgs = yield* sessions.messages({ sessionID: chat.id })
+    const failedAssistant = msgs.find((msg) => msg.info.role === "assistant" && msg.info.error)
+    expect(failedAssistant).toBeDefined()
+    expect(
+      msgs.some(
+        (message) =>
+          message.info.role === "user" &&
+          message.parts.some(
+            (part) =>
+              part.type === "text" && part.synthetic === true && part.text === "Произошла ошибка генерации, продолжай",
+          ),
+      ),
+    ).toBe(true)
+  }),
+)
+
 it.instance("loop stops provider overflow instead of auto-compacting when disabled", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig((url) => ({

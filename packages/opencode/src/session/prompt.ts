@@ -81,6 +81,12 @@ IMPORTANT:
 
 const STRUCTURED_OUTPUT_SYSTEM_PROMPT = `IMPORTANT: The user has requested structured output. You MUST use the StructuredOutput tool to provide your final response. Do NOT respond with plain text - you MUST call the StructuredOutput tool with your answer formatted according to the schema.`
 
+// When a generation turn dies on an error (dropped stream, provider failure
+// after retries are exhausted), restart the dialog automatically with this
+// prompt instead of leaving the session stopped without an answer.
+const GENERATION_ERROR_CONTINUE_TEXT = "Произошла ошибка генерации, продолжай"
+const MAX_GENERATION_ERROR_CONTINUES = 3
+
 function mcpResourceBase64Size(value: string) {
   const trimmed = value.replace(/\s/g, "")
   const padding = trimmed.endsWith("==") ? 2 : trimmed.endsWith("=") ? 1 : 0
@@ -1083,6 +1089,7 @@ const layer = Layer.effect(
         const ctx = yield* InstanceState.context
         let structured: unknown
         let step = 0
+        let errorContinues = 0
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
         while (true) {
@@ -1304,7 +1311,6 @@ const layer = Layer.effect(
                 }).toObject()
                 yield* sessions.updateMessage(handle.message)
                 yield* events.publish(Session.Event.Error, { sessionID, error: handle.message.error })
-                return "break" as const
               }
               if (format.type === "json_schema") {
                 handle.message.error = new SessionV1.StructuredOutputError({
@@ -1316,7 +1322,6 @@ const layer = Layer.effect(
               }
             }
 
-            if (result === "stop") return "break" as const
             if (result === "compact") {
               yield* compaction.create({
                 sessionID,
@@ -1325,7 +1330,56 @@ const layer = Layer.effect(
                 auto: true,
                 overflow: !handle.message.finish,
               })
+              return "continue" as const
             }
+
+            // Generation ended without an answer: either the processor stopped on an
+            // error or the turn finished with one attached. Restart the dialog
+            // automatically instead of leaving it dead — except for errors a retry
+            // cannot fix (user abort, auth, context overflow, provider refusal,
+            // structured output).
+            const failed = result === "stop" || (!!finished && !!handle.message.error)
+            if (!failed) {
+              errorContinues = 0
+              return "continue" as const
+            }
+
+            const error = handle.message.error
+            const recoverable =
+              error &&
+              error.name !== "MessageAbortedError" &&
+              error.name !== "ProviderAuthError" &&
+              error.name !== "ContextOverflowError" &&
+              error.name !== "ContentFilterError" &&
+              error.name !== "StructuredOutputError"
+            if (!recoverable || errorContinues >= MAX_GENERATION_ERROR_CONTINUES) {
+              return "break" as const
+            }
+
+            errorContinues++
+            yield* Effect.logInfo("auto-continuing after generation error", {
+              "session.id": sessionID,
+              messageID: handle.message.id,
+              error: error.name,
+              attempt: errorContinues,
+            })
+            const retryMsg: SessionV1.User = {
+              id: MessageID.ascending(),
+              sessionID,
+              role: "user",
+              time: { created: Date.now() },
+              agent: lastUser.agent,
+              model: lastUser.model,
+            }
+            yield* sessions.updateMessage(retryMsg)
+            yield* sessions.updatePart({
+              id: PartID.ascending(),
+              messageID: retryMsg.id,
+              sessionID,
+              type: "text",
+              text: GENERATION_ERROR_CONTINUE_TEXT,
+              synthetic: true,
+            } satisfies SessionV1.TextPart)
             return "continue" as const
           }).pipe(
             Effect.ensuring(instruction.clear(handle.message.id)),
