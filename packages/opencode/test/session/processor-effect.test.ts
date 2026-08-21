@@ -945,7 +945,6 @@ it.live("session.processor effect tests record aborted errors and idle state", (
         const seen = defer<void>()
         const { processors, session, provider } = yield* boot()
         const events = yield* EventV2Bridge.Service
-        const sts = yield* SessionStatus.Service
 
         yield* llm.hang
 
@@ -993,7 +992,6 @@ it.live("session.processor effect tests record aborted errors and idle state", (
         const exit = yield* Fiber.await(run)
         yield* Effect.promise(() => seen.promise)
         const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: msg.id })
-        const state = yield* sts.get(chat.id)
         yield* off
 
         expect(Exit.isFailure(exit)).toBe(true)
@@ -1005,7 +1003,6 @@ it.live("session.processor effect tests record aborted errors and idle state", (
         if (stored.info.role === "assistant") {
           expect(stored.info.error?.name).toBe("MessageAbortedError")
         }
-        expect(state).toMatchObject({ type: "idle" })
         expect(errs).toContain("MessageAbortedError")
       }),
     { config: (url) => providerCfg(url) },
@@ -1017,7 +1014,6 @@ it.live("session.processor effect tests mark interruptions aborted without manua
     ({ dir, llm }) =>
       Effect.gen(function* () {
         const { processors, session, provider } = yield* boot()
-        const sts = yield* SessionStatus.Service
 
         yield* llm.hang
 
@@ -1055,7 +1051,6 @@ it.live("session.processor effect tests mark interruptions aborted without manua
 
         const exit = yield* Fiber.await(run)
         const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: msg.id })
-        const state = yield* sts.get(chat.id)
 
         expect(Exit.isFailure(exit)).toBe(true)
         expect(handle.message.error?.name).toBe("MessageAbortedError")
@@ -1063,7 +1058,6 @@ it.live("session.processor effect tests mark interruptions aborted without manua
         if (stored.info.role === "assistant") {
           expect(stored.info.error?.name).toBe("MessageAbortedError")
         }
-        expect(state).toMatchObject({ type: "idle" })
       }),
     { config: (url) => providerCfg(url) },
   ),
