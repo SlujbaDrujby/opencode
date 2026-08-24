@@ -28,7 +28,12 @@ export const RETRY_BACKOFF_FACTOR = 2
 export const RETRY_JITTER_FACTOR = 0.25
 export const RETRY_MAX_DELAY_NO_HEADERS = 30_000 // 30 seconds
 export const RETRY_MAX_DELAY = 2_147_483_647 // max 32-bit signed integer for setTimeout
-export const RETRY_MAX_RETRIES = 5
+// Transient provider failures arrive in bursts (an upstream pool can stay dead
+// for minutes), so the default budget is overridable without a rebuild.
+export const RETRY_MAX_RETRIES = iife(() => {
+  const raw = Number.parseInt(Bun.env.OPENCODE_RETRY_MAX_RETRIES ?? "", 10)
+  return Number.isInteger(raw) && raw > 0 ? Math.min(raw, 20) : 5
+})
 
 const RETRYABLE_MESSAGE_PATTERNS = [
   /429|500|502|503|504|524/i,
