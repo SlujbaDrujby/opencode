@@ -72,6 +72,7 @@ interface ProcessorContext extends Input {
   needsCompaction: boolean
   currentText: SessionV1.TextPart | undefined
   reasoningMap: Record<string, SessionV1.ReasoningPart>
+  stepStarts: PartID[]
 }
 
 type StreamEvent = LLMEvent
@@ -111,6 +112,7 @@ const layer = Layer.effect(
         needsCompaction: false,
         currentText: undefined,
         reasoningMap: {},
+        stepStarts: [],
       }
       let aborted = false
 
@@ -421,16 +423,19 @@ const layer = Layer.effect(
           case "provider-error":
             throw new Error(value.message)
 
-          case "step-start":
+          case "step-start": {
             if (!ctx.snapshot) ctx.snapshot = yield* snapshot.track()
+            const stepStartID = PartID.ascending()
+            ctx.stepStarts.push(stepStartID)
             yield* session.updatePart({
-              id: PartID.ascending(),
+              id: stepStartID,
               messageID: ctx.assistantMessage.id,
               sessionID: ctx.sessionID,
               snapshot: ctx.snapshot,
               type: "step-start",
             })
             return
+          }
 
           case "step-finish": {
             const completedSnapshot = yield* snapshot.track()
@@ -629,7 +634,26 @@ const layer = Layer.effect(
           yield* events.publish(Session.Event.Error, { sessionID: ctx.sessionID, error })
           return
         }
+        // A failed stream leaves dangling markers (step-start, empty text/reasoning)
+        // persisted for every retry attempt. Drop them so the stored message stays
+        // well-formed, and mark the turn finished like the context-overflow path does.
+        if (!aborted) {
+          ctx.assistantMessage.finish = "error"
+          const junk = [
+            ...ctx.stepStarts,
+            ...(ctx.currentText && ctx.currentText.text === "" ? [ctx.currentText.id] : []),
+            ...Object.values(ctx.reasoningMap)
+              .filter((part) => part.text === "")
+              .map((part) => part.id),
+          ]
+          for (const partID of junk) {
+            yield* session
+              .removePart({ sessionID: ctx.sessionID, messageID: ctx.assistantMessage.id, partID })
+              .pipe(Effect.ignore)
+          }
+        }
         ctx.assistantMessage.error = error
+        yield* session.updateMessage(ctx.assistantMessage)
         yield* events.publish(Session.Event.Error, {
           sessionID: ctx.assistantMessage.sessionID,
           error: ctx.assistantMessage.error,
