@@ -1095,6 +1095,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
         if (evt.button !== MouseButton.RIGHT) return
 
         if (!Selection.copy(renderer, toast, clipboard)) return
+        Selection.markRightClickCopy()
         evt.preventDefault()
         evt.stopPropagation()
       }}
