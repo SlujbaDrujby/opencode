@@ -43,6 +43,24 @@ export function copy(renderer: Renderer, toast: Toast, clipboard: ClipboardServi
   return true
 }
 
+let rightClickCopyAt = 0
+
+const RIGHT_CLICK_PASTE_SUPPRESSION_MS = 300
+
+export function markRightClickCopy() {
+  rightClickCopyAt = Date.now()
+}
+
+// Windows Terminal fires its own bracketed paste on right-click even when our
+// mousedown handler already intercepted the button and copied the selection.
+// Swallow the collateral paste that arrives right after the copy so the stale
+// buffer never lands in the prompt.
+export function consumeRightClickPaste(): boolean {
+  const suppress = Date.now() - rightClickCopyAt <= RIGHT_CLICK_PASTE_SUPPRESSION_MS
+  rightClickCopyAt = 0
+  return suppress
+}
+
 export function handleSelectionKey(
   renderer: Renderer,
   toast: Toast,

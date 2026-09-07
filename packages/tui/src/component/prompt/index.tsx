@@ -38,6 +38,7 @@ import { DialogStash } from "../dialog-stash"
 import { type AutocompleteRef, Autocomplete } from "./autocomplete"
 import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import type { AssistantMessage, FilePart, UserMessage } from "@opencode-ai/sdk/v2"
+import * as Selection from "../../util/selection"
 import { Locale } from "../../util/locale"
 import { errorMessage } from "../../util/error"
 import { formatDuration } from "../../util/format"
@@ -1395,6 +1396,11 @@ export function Prompt(props: PromptProps) {
               }}
               onPaste={async (event: PasteEvent) => {
                 if (props.disabled) {
+                  event.preventDefault()
+                  return
+                }
+
+                if (Selection.consumeRightClickPaste()) {
                   event.preventDefault()
                   return
                 }
