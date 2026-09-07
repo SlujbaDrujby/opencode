@@ -85,7 +85,7 @@ const STRUCTURED_OUTPUT_SYSTEM_PROMPT = `IMPORTANT: The user has requested struc
 // after retries are exhausted), restart the dialog automatically with this
 // prompt instead of leaving the session stopped without an answer.
 const GENERATION_ERROR_CONTINUE_TEXT = "Произошла ошибка генерации, продолжай"
-const MAX_GENERATION_ERROR_CONTINUES = 3
+const MAX_GENERATION_ERROR_CONTINUES = 300
 
 function mcpResourceBase64Size(value: string) {
   const trimmed = value.replace(/\s/g, "")
@@ -1333,11 +1333,11 @@ const layer = Layer.effect(
               return "continue" as const
             }
 
-            // Generation ended without an answer: either the processor stopped on an
-            // error or the turn finished with one attached. Restart the dialog
-            // automatically instead of leaving it dead — except for errors a retry
-            // cannot fix (user abort, auth, context overflow, provider refusal,
-            // structured output).
+            // Generation ended without an answer: either the processor stopped on a
+            // dead turn (error, block, or drop) or finished with one attached.
+            // Restart the dialog automatically instead of leaving it dead —
+            // except for errors a retry cannot fix (auth, context overflow,
+            // provider refusal, structured output).
             const failed = result === "stop" || (!!finished && !!handle.message.error)
             if (!failed) {
               errorContinues = 0
@@ -1345,13 +1345,15 @@ const layer = Layer.effect(
             }
 
             const error = handle.message.error
+            // A "stop" with no error attached (e.g. processor blocked after a
+            // denied tool call) is still a dead turn — restart it too, so the
+            // dialog never ends silently without completing.
             const recoverable =
-              error &&
-              error.name !== "MessageAbortedError" &&
-              error.name !== "ProviderAuthError" &&
-              error.name !== "ContextOverflowError" &&
-              error.name !== "ContentFilterError" &&
-              error.name !== "StructuredOutputError"
+              !error ||
+              (error.name !== "ProviderAuthError" &&
+                error.name !== "ContextOverflowError" &&
+                error.name !== "ContentFilterError" &&
+                error.name !== "StructuredOutputError")
             if (!recoverable || errorContinues >= MAX_GENERATION_ERROR_CONTINUES) {
               return "break" as const
             }
@@ -1360,7 +1362,7 @@ const layer = Layer.effect(
             yield* Effect.logInfo("auto-continuing after generation error", {
               "session.id": sessionID,
               messageID: handle.message.id,
-              error: error.name,
+              error: error?.name ?? "stop-no-error",
               attempt: errorContinues,
             })
             const retryMsg: SessionV1.User = {
