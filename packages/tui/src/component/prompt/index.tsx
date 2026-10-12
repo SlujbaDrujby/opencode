@@ -41,6 +41,7 @@ import { type AutocompleteOption, type AutocompleteRef, Autocomplete } from "./a
 import { useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { Locale } from "../../util/locale"
 import { errorMessage } from "../../util/error"
+import { Selection } from "../../util/selection"
 import { createColors, createFrames } from "../../ui/spinner"
 import { useDialog } from "../../ui/dialog"
 import { DialogIntegration } from "../dialog-integration"
@@ -1774,6 +1775,11 @@ export function Prompt(props: PromptProps) {
               }}
               onPaste={(event: PasteEvent) => {
                 if (disabled()) {
+                  event.preventDefault()
+                  return
+                }
+
+                if (Selection.consumeRightClickPaste()) {
                   event.preventDefault()
                   return
                 }
