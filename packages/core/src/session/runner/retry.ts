@@ -39,12 +39,18 @@ const retryAfter = (input: Input) => {
   return undefined
 }
 
+// A deployment can raise the retry budget without a rebuild when an upstream
+// pool stays dead for minutes (the v1 default of 5 was too low for free-model
+// providers). Bounded so a misconfiguration cannot stall a step for hours.
+const requestedRetries = Number.parseInt(process.env.OPENCODE_RETRY_MAX_RETRIES ?? "", 10)
+const RETRY_MAX_RETRIES = Number.isInteger(requestedRetries) && requestedRetries > 0 ? Math.min(requestedRetries, 30) : 10
+
 // Exponential from 2s capped at 10s per gap, for 10 retries: 2, 4, 8, then 10 × 7, about 84s of
 // waiting when every attempt fails (67–101s with jitter). `min` takes the faster schedule, so the
 // cap applies per gap; `max` with `recurs` bounds the count.
 const schedule = Schedule.max([
   Schedule.min([Schedule.exponential("2 seconds"), Schedule.spaced("10 seconds")]),
-  Schedule.recurs(10),
+  Schedule.recurs(RETRY_MAX_RETRIES),
 ]).pipe(
   Schedule.jittered,
   Schedule.setInputType<Input>(),
