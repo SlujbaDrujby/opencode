@@ -1407,7 +1407,7 @@ export function Session(props: {
                     foregroundColor: theme.border.base,
                   },
                 }}
-                stickyScroll={!navigationMessage() && !navigationSlack()}
+                stickyScroll={!navigationMessage() && !navigationSlack() && !awayFromBottom()}
                 stickyStart="bottom"
                 flexGrow={1}
                 scrollAcceleration={scrollAcceleration()}
