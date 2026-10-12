@@ -1399,6 +1399,7 @@ function App() {
         if (evt.button !== MouseButton.RIGHT) return
 
         if (!Selection.copy(renderer, toast, clipboard)) return
+        Selection.markRightClickCopy()
         evt.preventDefault()
         evt.stopPropagation()
       }}
