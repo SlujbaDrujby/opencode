@@ -86,6 +86,10 @@ export const isRetryable = (error: AIError) => {
   const override = error.reason.http?.headers["x-should-retry"]
   if (override === "true") return true
   if (override === "false") return false
+  // A 429 is "come back later" whatever the provider calls it. OpenCode's free tier labels
+  // the same transient refusal as a quota error and advertises a next-day retry-after, so the
+  // classification alone would end the step instead of letting the window clear.
+  if (error.reason.http?.status === 429) return true
   switch (error.reason._tag) {
     case "RateLimit":
     case "ProviderInternal":
