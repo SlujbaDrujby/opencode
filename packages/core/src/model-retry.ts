@@ -11,6 +11,18 @@ interface Input {
 /** Bound provider-requested delays so a hostile or buggy retry-after cannot stall a call for hours. */
 const RETRY_AFTER_MAX = Duration.toMillis("15 minutes")
 
+// A 429 is transient, but the provider's own retry-after for it can point at the next day
+// while the window actually clears within minutes. Throttled attempts get a short ladder
+// instead, so a step recovers on its own. Overridable for experimentation, in seconds.
+const requestedThrottleDelays = (process.env.OPENCODE_RETRY_429_DELAYS ?? "")
+  .split(",")
+  .map((value) => Number.parseInt(value.trim(), 10))
+  .filter((value) => Number.isInteger(value) && value >= 0)
+const THROTTLE_DELAYS = (requestedThrottleDelays.length ? requestedThrottleDelays : [20, 40, 60]).map((seconds) =>
+  Duration.toMillis(Duration.seconds(seconds)),
+)
+const isThrottled = (cause: AIError) => cause.reason.http?.status === 429
+
 const retryAfter = (input: Input) => {
   if (input.cause.reason._tag === "RateLimit" || input.cause.reason._tag === "ProviderInternal")
     return input.cause.reason.retryAfterMs === undefined
@@ -49,8 +61,16 @@ export const policy = Effect.gen(function* () {
   const step = yield* Schedule.toStep(schedule)
   let attempt = 1
   let timeouts = 0
+  let throttles = 0
   return (input: Input) =>
     Effect.gen(function* () {
+      if (isThrottled(input.cause)) {
+        const delay = THROTTLE_DELAYS[throttles]
+        if (delay === undefined) return undefined
+        throttles++
+        attempt++
+        return { attempt, delay: Math.ceil(delay), retry: true }
+      }
       const now = yield* Clock.currentTimeMillis
       const next = yield* step(now, input).pipe(Pull.catchDone(() => Effect.succeed(undefined)))
       if (!next) return undefined
