@@ -84,7 +84,45 @@ export const isContextOverflowFailure = (failure: unknown) =>
  * Whether a failed call may succeed when sent again: rate limits, provider-side failures, transport failures that did
  * not deliver an accepted write, and unrecognized failures. Callers decide which calls are safe to repeat.
  */
-export const isRetryable = (error: AIError) => error.isRetryable
+export const isRetryable = (error: AIError) => {
+  const override = error.reason.http?.headers["x-should-retry"]
+  if (override === "true") return true
+  if (override === "false") return false
+  // A 429 is "come back later" whatever the provider calls it. OpenCode's free tier labels
+  // the same transient refusal as a quota error and advertises a next-day retry-after, so the
+  // classification alone would end the step instead of letting the window clear.
+  if (error.reason.http?.status === 429) return true
+  switch (error.reason._tag) {
+    case "RateLimit":
+    case "ProviderInternal":
+      return true
+    // A WebSocket acknowledgment marks delivery accepted before model output may exist.
+    // Read failures can still recover; the caller chooses retry versus continuation from durable output.
+    case "Transport":
+      return (
+        error.reason.delivery !== "rejected" &&
+        (error.reason.delivery !== "accepted" || error.reason.operation === "read")
+      )
+    case "InvalidProviderOutput":
+      return error.reason.classification === "incomplete-stream"
+    // Unrecognized failures retry: classification records affirmative
+    // deterministic evidence, and transient failures are exactly the ones
+    // that arrive in shapes no classifier anticipates.
+    case "UnknownProvider":
+      return true
+    case "Authentication":
+    case "QuotaExceeded":
+    case "ContentPolicy":
+    case "InvalidRequest":
+    case "UnsupportedOperation":
+    case "Timeout":
+      return false
+    default: {
+      const exhaustive: never = error.reason
+      return exhaustive
+    }
+  }
+}
 
 // OpenCode Zen reports account caps as typed 429/402 errors that are not throttles.
 const QUOTA_CODES = new Set([
