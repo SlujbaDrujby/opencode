@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { isContextOverflow, isContextOverflowFailure, isRetryable } from "../src/effect.js"
-import { AIError, HttpContext } from "../src/schema/index.js"
+import { isContextOverflow, isContextOverflowFailure, isRetryable, isThrottleFailure } from "../src/effect.js"
+import { AIError, HttpContext, QuotaExceededError } from "../src/schema/index.js"
 import { classifyProviderFailure, providerErrorMessage } from "../src/provider-error.js"
 
 describe("provider error classification", () => {
@@ -712,5 +712,24 @@ describe("provider error messages", () => {
         "invalid parameter",
       ].map(providerErrorMessage),
     ).toEqual([undefined, undefined, undefined, undefined])
+  })
+})
+
+describe("throttle detection", () => {
+  const body = '{"type":"error","error":{"type":"FreeUsageLimitError","message":"Free usage limit reached."}}'
+  const http = (status: number) =>
+    new HttpContext({ url: "https://opencode.ai/zen/v1/chat/completions", status, headers: {} })
+  const quota = (reason: { message: string; body?: string; http?: HttpContext }) =>
+    new AIError({ reason: new QuotaExceededError(reason) })
+
+  test("treats a 429 as a throttle whatever the provider calls it", () => {
+    expect(isThrottleFailure(quota({ message: "Free usage limit reached.", http: http(429) }))).toBe(true)
+    expect(isThrottleFailure(quota({ message: "insufficient_quota", http: http(402) }))).toBe(false)
+  })
+
+  test("recognizes the free tier refusal that keeps no HTTP context", () => {
+    expect(isThrottleFailure(quota({ message: "Free usage limit reached.", body }))).toBe(true)
+    expect(isThrottleFailure(quota({ message: "quota exceeded", body }))).toBe(true)
+    expect(isThrottleFailure(quota({ message: "insufficient_quota" }))).toBe(false)
   })
 })

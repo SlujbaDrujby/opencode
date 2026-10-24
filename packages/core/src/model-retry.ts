@@ -1,6 +1,6 @@
 export * as ModelRetry from "./model-retry.js"
 
-import { AIError, isRetryable } from "@opencode/ai/effect"
+import { AIError, isRetryable, isThrottleFailure } from "@opencode/ai/effect"
 import { Clock, Duration, Effect, Pull, Schedule } from "effect"
 
 interface Input {
@@ -13,15 +13,17 @@ const RETRY_AFTER_MAX = Duration.toMillis("15 minutes")
 
 // A 429 is transient, but the provider's own retry-after for it can point at the next day
 // while the window actually clears within minutes. Throttled attempts get a short ladder
-// instead, so a step recovers on its own. Overridable for experimentation, in seconds.
+// instead, so a step recovers on its own. OpenCode's free tier clears a refusal only after
+// its public IP rotates, which takes about half a minute, so the ladder spans roughly
+// thirteen minutes: long enough to outlast several rotations without holding a step forever.
+// Overridable for experimentation, in seconds.
 const requestedThrottleDelays = (process.env.OPENCODE_RETRY_429_DELAYS ?? "")
   .split(",")
   .map((value) => Number.parseInt(value.trim(), 10))
   .filter((value) => Number.isInteger(value) && value >= 0)
-const THROTTLE_DELAYS = (requestedThrottleDelays.length ? requestedThrottleDelays : [20, 40, 60]).map((seconds) =>
-  Duration.toMillis(Duration.seconds(seconds)),
-)
-const isThrottled = (cause: AIError) => cause.reason.http?.status === 429
+const THROTTLE_DELAYS = (
+  requestedThrottleDelays.length ? requestedThrottleDelays : [20, 30, 45, 60, 90, 120, 180, 240]
+).map((seconds) => Duration.toMillis(Duration.seconds(seconds)))
 
 const retryAfter = (input: Input) => {
   if (input.cause.reason._tag === "RateLimit" || input.cause.reason._tag === "ProviderInternal")
@@ -64,7 +66,7 @@ export const policy = Effect.gen(function* () {
   let throttles = 0
   return (input: Input) =>
     Effect.gen(function* () {
-      if (isThrottled(input.cause)) {
+      if (isThrottleFailure(input.cause)) {
         const delay = THROTTLE_DELAYS[throttles]
         if (delay === undefined) return undefined
         throttles++
