@@ -123,8 +123,18 @@ type Precomputed = {
 }
 
 const NOTHING_TO_COMPACT: Failure = { error: { type: "compaction.unavailable", message: "Nothing to compact yet" } }
+/**
+ * A summary the provider cut off at its output limit. It is resent against a shorter transcript, which leaves
+ * more of the window for the reply, instead of ending the step: a model that spends its output on reasoning
+ * before writing anything loses the whole summary when the request already fills the window.
+ */
+const SUMMARY_TRUNCATED: Failure = {
+  error: { type: "compaction.failed", message: "Compaction summary reached the output token limit" },
+}
 /** After each "too long" rejection, the next attempt aims at this share of the first rejected request's size. */
 const SHRINK_STEPS = [0.85, 0.7, 0.5, 0.35]
+/** After a cut-off summary, the next attempt aims at this share of the truncated request's size. */
+const TRUNCATE_STEPS = [0.8, 0.6, 0.45]
 // The least of the window kept free for the last reply before compaction and for the summary itself.
 const RESERVE_MIN = 16_000
 /**
@@ -588,8 +598,10 @@ export const layer = Layer.effect(
      * each shortening the transcript again from scratch, and a rejection after those gives up. A "payload too large"
      * rejection is about bytes, which inline media almost always accounts for, so one on the unchanged request resends
      * it as text, which carries no media, without counting; one on text counts as "too long". Other provider errors
-     * resend the same request under the session's retry policy. A `Failure` from `send` is a reply that cannot be
-     * used, and is never retried.
+     * resend the same request under the session's retry policy. A summary the provider cut off at its output limit is
+     * resent against a transcript at 80%, 60%, then 45% of the truncated request's estimate, since a shorter request
+     * leaves more of the window for reasoning and the summary itself. Any other `Failure` from `send` is a reply that
+     * cannot be used, and is never retried.
      */
     const deliver = Effect.fnUntraced(function* (
       trigger: Trigger,
@@ -608,6 +620,8 @@ export const layer = Layer.effect(
       const policy = yield* SessionRunnerRetry.policy(context.session.id)
       let rejections = 0
       let rejected: number | undefined
+      let truncations = 0
+      let truncated: number | undefined
       let asText = false
       let fit = shrink.fit
 
@@ -642,6 +656,15 @@ export const layer = Layer.effect(
         const attempt = yield* Effect.result(send(request, size))
         if (Result.isSuccess(attempt)) return attempt.success
         const cause = attempt.failure
+        if (cause === SUMMARY_TRUNCATED) {
+          const step = TRUNCATE_STEPS[truncations]
+          if (step === undefined) return yield* Effect.fail<Failure>(SUMMARY_TRUNCATED)
+          truncations++
+          truncated ??= estimateRequest(request)
+          target = Math.floor(truncated * step)
+          fit = target
+          continue
+        }
         if (!(cause instanceof AIError)) return yield* Effect.fail(cause)
         const error = toSessionError(cause)
         const tooLarge = cause.reason._tag === "InvalidRequest" && cause.reason.classification === "payload-too-large"
@@ -809,10 +832,7 @@ export const layer = Layer.effect(
                   new AIError({ reason: new UnknownProviderError({ message: "Compaction generation failed" }) }),
                 )
               case "length":
-                return unusable({
-                  type: "compaction.failed",
-                  message: "Compaction summary reached the output token limit",
-                })
+                return Effect.fail<Failure>(SUMMARY_TRUNCATED)
               case "content-filter":
                 return unusable(contentFilterError("Compaction summary was blocked by the provider", event.reason))
               default:

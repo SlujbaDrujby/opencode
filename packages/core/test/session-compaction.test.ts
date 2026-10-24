@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test"
+﻿import { expect, test } from "bun:test"
 import {
   GenerationOptions,
   LLMClient,
@@ -50,6 +50,27 @@ let requests: LLMRequest[] = []
 /** Runs before a request's response streams; tests hold it back to keep a background summary in flight. */
 let beforeResponse: Effect.Effect<void> = Effect.void
 let reject: ((request: LLMRequest) => boolean) | undefined
+/** The events one response streams; tests replace it to model a provider that fails or cuts the reply short. */
+const defaultSummaryResponse = () =>
+  Stream.make(
+    LLMEvent.textDelta({ id: "summary", text: "## Objective\n- manual summary" }),
+    LLMEvent.stepFinish({
+      index: 0,
+      reason: { normalized: "stop" },
+      usage: {
+        inputTokens: 15,
+        outputTokens: 6,
+        nonCachedInputTokens: 10,
+        cacheReadInputTokens: 3,
+        cacheWriteInputTokens: 2,
+        reasoningTokens: 2,
+      },
+    }),
+    LLMEvent.finish({
+      reason: { normalized: "stop" },
+    }),
+  )
+let respond: () => Stream.Stream<LLMEvent> = defaultSummaryResponse
 const model = LanguageModel.make({
   id: "summary-model",
   provider: "test",
@@ -71,29 +92,7 @@ const client = Layer.mock(LLMClient.Service)({
     if (reject?.(request)) {
       return Stream.make(LLMEvent.providerError({ message: "prompt too long", classification: "context-overflow" }))
     }
-    return Stream.fromEffect(beforeResponse).pipe(
-      Stream.drain,
-      Stream.concat(
-        Stream.make(
-          LLMEvent.textDelta({ id: "summary", text: "## Objective\n- manual summary" }),
-          LLMEvent.stepFinish({
-            index: 0,
-            reason: { normalized: "stop" },
-            usage: {
-              inputTokens: 15,
-              outputTokens: 6,
-              nonCachedInputTokens: 10,
-              cacheReadInputTokens: 3,
-              cacheWriteInputTokens: 2,
-              reasoningTokens: 2,
-            },
-          }),
-          LLMEvent.finish({
-            reason: { normalized: "stop" },
-          }),
-        ),
-      ),
-    )
+    return Stream.concat(Stream.fromEffect(beforeResponse).pipe(Stream.drain), respond())
   },
   generate: () => Effect.die("unused"),
 })
@@ -871,6 +870,50 @@ it.effect("compaction keeps the output limit for a request that fits its target"
     expect(requests).toHaveLength(1)
     expect(requests[0]?.generation).toEqual(GenerationOptions.make({ maxTokens: 30_000 }))
   }),
+)
+
+/** A reply the provider cut off at its output limit, as when reasoning consumes the whole budget. */
+const truncatedSummary = () =>
+  Stream.make(
+    LLMEvent.textDelta({ id: "summary", text: "## Objective\n- cut off" }),
+    LLMEvent.finish({ reason: { normalized: "length" } }),
+  )
+
+it.effect("a summary cut off at the output limit is retried against a shorter transcript", () =>
+  Effect.gen(function* () {
+    requests = []
+    let attempt = 0
+    respond = () => {
+      attempt++
+      return attempt === 1 ? truncatedSummary() : defaultSummaryResponse()
+    }
+
+    const session = yield* insertSession(Session.ID.make("ses_truncated_compaction"))
+    // Two ~80k-token exchanges: the first attempt sends both, the retry has to drop or shorten the older one.
+    const messages = ["x".repeat(320_000), "y".repeat(320_000)].map(textUser)
+    const size = (request: LLMRequest) => JSON.stringify(request.messages).length
+
+    expect(yield* compactManually(session, messages)).toEqual({ status: "completed" })
+    expect(requests).toHaveLength(2)
+    expect(size(requests[1]!)).toBeLessThan(size(requests[0]!))
+  }).pipe(Effect.ensuring(Effect.sync(() => (respond = defaultSummaryResponse)))),
+)
+
+it.effect("a summary that keeps running out of output room after every shrink fails", () =>
+  Effect.gen(function* () {
+    requests = []
+    respond = truncatedSummary
+
+    const session = yield* insertSession(Session.ID.make("ses_truncated_compaction_failed"))
+    const messages = ["x".repeat(320_000), "y".repeat(320_000)].map(textUser)
+
+    expect(yield* compactManually(session, messages)).toEqual({
+      status: "failed",
+      error: { type: "compaction.failed", message: "Compaction summary reached the output token limit" },
+    })
+    // The initial attempt and one per truncation step.
+    expect(requests).toHaveLength(4)
+  }).pipe(Effect.ensuring(Effect.sync(() => (respond = defaultSummaryResponse)))),
 )
 
 it.effect("compaction hooks can supply the summary instead of the model", () =>
