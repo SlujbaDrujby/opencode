@@ -292,19 +292,16 @@ const makeCrossSpawnSpawner = Effect.gen(function* () {
 
     for (const x of extra) {
       const node = proc.stdio[x.fd]
-      switch (x.config.type) {
-        case "input":
-          yield* setupInput(x.fd, node, x.config.stream)
-          break
-        case "output":
-          setupOutput(x.fd, node, x.config.sink)
-          break
-        case "duplex":
-          // Keep writing possible after the child closes its write side.
-          if (node && "allowHalfOpen" in node) node.allowHalfOpen = true
-          setupOutput(x.fd, node, x.config.sink)
-          yield* setupInput(x.fd, node, x.config.stream)
-          break
+      if (x.config.type === "input") {
+        yield* setupInput(x.fd, node, x.config.stream)
+      } else if (x.config.type === "output") {
+        setupOutput(x.fd, node, x.config.sink)
+      } else {
+        // duplex: keep writing possible after the child closes its write side.
+        const dc = x.config as { type: string; sink: Sink.Sink<Uint8Array, Uint8Array, never, PlatformError.PlatformError>; stream: Stream.Stream<Uint8Array, PlatformError.PlatformError> }
+        if (node && "allowHalfOpen" in node) node.allowHalfOpen = true
+        setupOutput(x.fd, node, dc.sink)
+        yield* setupInput(x.fd, node, dc.stream)
       }
     }
 
@@ -658,7 +655,7 @@ const makeCrossSpawnSpawner = Effect.gen(function* () {
                 ...next.options,
                 additionalFds: {
                   ...next.options.additionalFds,
-                  [name]: existing?.type === "duplex" ? { ...existing, stream } : { type: "input", stream },
+                  [name]: existing && (existing.type as string) === "duplex" ? { ...existing, type: "input", stream } : { type: "input", stream },
                 },
               }),
             )
