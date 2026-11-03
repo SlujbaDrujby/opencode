@@ -140,8 +140,6 @@ export const isThrottleFailure = (error: AIError) =>
     // The raw body carries the provider's own code when a route reports the refusal without a message.
     FREE_TIER_LIMIT.test(`${error.reason.message}\n${error.reason.body ?? ""}`))
 
-const decodeJson = Schema.decodeUnknownOption(Json)
-
 // OpenCode Zen reports account caps as typed 429/402 errors that are not throttles.
 const QUOTA_CODES = new Set([
   "insufficient_quota",

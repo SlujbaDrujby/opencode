@@ -717,7 +717,6 @@ describe("provider error messages", () => {
   })
 })
 
-<<<<<<< HEAD
 describe("AIError getters", () => {
   const rateLimit = new AIError({
     reason: new RateLimitError({
