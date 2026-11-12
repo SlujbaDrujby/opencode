@@ -86,6 +86,22 @@ export const isContextOverflowFailure = (failure: unknown) =>
  */
 export const isRetryable = (error: AIError) => error.isRetryable
 
+// OpenCode's free tier reports its per-IP window as a quota error, and when it arrives inside the
+// response body it carries no HTTP context at all. The window clears within minutes once the
+// public IP rotates, so such a refusal must wait instead of ending the step.
+const FREE_TIER_LIMIT = /free[_\s-]?(?:messages|usage|tier)|freeusagelimit/i
+
+/**
+ * Whether a failure is a "come back later" throttle that deserves the short retry ladder, even when
+ * the provider neither sent a 429 status nor a recognizable rate-limit classification.
+ */
+export const isThrottleFailure = (error: AIError) =>
+  error.reason.http?.status === 429 ||
+  error.reason._tag === "RateLimit" ||
+  (error.reason._tag === "QuotaExceeded" &&
+    // The raw body carries the provider's own code when a route reports the refusal without a message.
+    FREE_TIER_LIMIT.test(`${error.reason.message}\n${error.reason.body ?? ""}`))
+
 // OpenCode Zen reports account caps as typed 429/402 errors that are not throttles.
 const QUOTA_CODES = new Set([
   "insufficient_quota",

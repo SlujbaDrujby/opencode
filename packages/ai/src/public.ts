@@ -1,4 +1,4 @@
-export { isContextOverflow, isContextOverflowFailure, isRetryable } from "./provider-error.js"
+export { isContextOverflow, isContextOverflowFailure, isRetryable, isThrottleFailure } from "./provider-error.js"
 export {
   ProtocolID,
   RouteID,
