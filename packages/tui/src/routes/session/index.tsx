@@ -1691,7 +1691,7 @@ export function Session(props: {
                     foregroundColor: theme.border.base,
                   },
                 }}
-                stickyScroll={!navigationMessage() && !navigationSlack()}
+                stickyScroll={!navigationMessage() && !navigationSlack() && !awayFromBottom()}
                 stickyStart="bottom"
                 // Rows never grow or shrink, so a change to one row lays out only that row.
                 contentOptions={{ layoutMode: "list" }}
