@@ -15,14 +15,14 @@ const RETRY_AFTER_MAX = Duration.toMillis("15 minutes")
 // while the window actually clears within minutes. Throttled attempts get a short ladder
 // instead, so a step recovers on its own. OpenCode's free tier clears a refusal only after
 // its public IP rotates, which takes about half a minute, so the ladder spans roughly
-// thirteen minutes: long enough to outlast several rotations without holding a step forever.
-// Overridable for experimentation, in seconds.
+// twenty minutes: enough for a rotation that stalls on the provider's address quota plus the
+// client's own retries, without holding a step forever. Overridable for experimentation, in seconds.
 const requestedThrottleDelays = (process.env.OPENCODE_RETRY_429_DELAYS ?? "")
   .split(",")
   .map((value) => Number.parseInt(value.trim(), 10))
   .filter((value) => Number.isInteger(value) && value >= 0)
 const THROTTLE_DELAYS = (
-  requestedThrottleDelays.length ? requestedThrottleDelays : [20, 30, 45, 60, 90, 120, 180, 240]
+  requestedThrottleDelays.length ? requestedThrottleDelays : [20, 30, 45, 60, 90, 120, 180, 240, 300, 300]
 ).map((seconds) => Duration.toMillis(Duration.seconds(seconds)))
 
 const retryAfter = (input: Input) => {
@@ -33,12 +33,19 @@ const retryAfter = (input: Input) => {
   return undefined
 }
 
+// A deployment can raise the retry budget without a rebuild when an upstream
+// pool stays dead for minutes (the v1 default of 5 was too low for free-model
+// providers). Bounded so a misconfiguration cannot stall a step for hours.
+const requestedRetries = Number.parseInt(process.env.OPENCODE_RETRY_MAX_RETRIES ?? "", 10)
+const RETRY_MAX_RETRIES =
+  Number.isInteger(requestedRetries) && requestedRetries > 0 ? Math.min(requestedRetries, 30) : 10
+
 // Exponential from 2s capped at 10s per gap, for 10 retries: 2, 4, 8, then 10 × 7, about 84s of
 // waiting when every attempt fails (67–101s with jitter). `min` takes the faster schedule, so the
 // cap applies per gap; `max` with `recurs` bounds the count.
 const schedule = Schedule.max([
   Schedule.min([Schedule.exponential("2 seconds"), Schedule.spaced("10 seconds")]),
-  Schedule.recurs(10),
+  Schedule.recurs(RETRY_MAX_RETRIES),
 ]).pipe(
   Schedule.jittered,
   Schedule.setInputType<Input>(),

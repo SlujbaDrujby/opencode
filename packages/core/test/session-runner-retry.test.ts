@@ -129,15 +129,18 @@ describe("SessionRunnerRetry.policy", () => {
     Effect.gen(function* () {
       const policy = yield* SessionRunnerRetry.policy(SessionSchema.ID.make("ses_retry"))
       const attempts: Array<{ retry: boolean; delay?: number }> = []
-      for (let i = 0; i < 9; i++) {
+      for (let i = 0; i < 11; i++) {
         const decision = yield* policy(input(freeLimit))
         attempts.push(decision.retry ? { retry: true, delay: decision.delay } : { retry: false })
       }
-      expect(attempts.filter((attempt) => attempt.retry)).toHaveLength(8)
+      expect(attempts.filter((attempt) => attempt.retry)).toHaveLength(10)
       expect(attempts.at(-1)).toEqual({ retry: false })
       // Bounded far below the advertised retry-after, so a step cannot stall for hours.
-      expect(attempts.every((attempt) => (attempt.delay ?? 0) < 300_000)).toBe(true)
+      expect(attempts.every((attempt) => (attempt.delay ?? 0) <= 300_000)).toBe(true)
       expect(attempts[0]).toEqual({ retry: true, delay: 20_000 })
+      // Long enough for a rotation that stalls on the provider's address quota (~10 min) to finish.
+      const waited = attempts.reduce((total, attempt) => total + (attempt.delay ?? 0), 0)
+      expect(waited).toBeGreaterThan(20 * 60_000)
     }),
   )
 
