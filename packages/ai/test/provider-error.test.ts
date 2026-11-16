@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test"
-import { isContextOverflow, isContextOverflowFailure, isRetryable, isThrottleFailure } from "../src/effect.js"
+import {
+  isContextOverflow,
+  isContextOverflowFailure,
+  isFreeTierLimit,
+  isRetryable,
+  isThrottleFailure,
+} from "../src/effect.js"
 import { AIError, HttpContext, QuotaExceededError, RateLimitError, TransportError } from "../src/schema/index.js"
 import { classifyProviderFailure, providerErrorMessage } from "../src/provider-error.js"
 
@@ -848,5 +854,16 @@ describe("throttle detection", () => {
     expect(isThrottleFailure(quota({ message: "Free usage limit reached.", body }))).toBe(true)
     expect(isThrottleFailure(quota({ message: "quota exceeded", body }))).toBe(true)
     expect(isThrottleFailure(quota({ message: "insufficient_quota" }))).toBe(false)
+  })
+
+  test("separates the free tier refusal from a provider's own rate limit", () => {
+    expect(isFreeTierLimit(quota({ message: "Free usage limit reached.", body }))).toBe(true)
+    expect(isFreeTierLimit(quota({ message: "quota exceeded", body }))).toBe(true)
+    expect(isFreeTierLimit(quota({ message: "insufficient_quota", http: http(429) }))).toBe(false)
+    expect(
+      isFreeTierLimit(
+        new AIError({ reason: new RateLimitError({ message: "Rate limit reached", http: http(429) }) }),
+      ),
+    ).toBe(false)
   })
 })

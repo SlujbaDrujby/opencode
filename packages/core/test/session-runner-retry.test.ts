@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test"
-import { AIError, HttpContext, ProviderInternalError, QuotaExceededError, TransportError } from "@opencode/ai/effect"
+import {
+  AIError,
+  HttpContext,
+  ProviderInternalError,
+  QuotaExceededError,
+  RateLimitError,
+  TransportError,
+} from "@opencode/ai/effect"
 import { ModelRetry } from "@opencode/core/model-retry"
 import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
@@ -48,6 +55,14 @@ const freeLimit = new AIError({
 // The same refusal reported through a route that keeps no HTTP context.
 const freeLimitWithoutHttp = new AIError({
   reason: new QuotaExceededError({ message: "FreeUsageLimitError", body: freeLimitBody }),
+})
+// A provider's own rate limit: a per-minute cap that clears on the provider's schedule.
+const rateLimit = new AIError({
+  reason: new RateLimitError({
+    message: "Rate limit reached",
+    body: '{"error":{"code":"rate_limit_exceeded"}}',
+    http: new HttpContext({ url: "https://api.openai.com/v1/chat/completions", status: 429, headers: {} }),
+  }),
 })
 const paidQuota = new AIError({
   reason: new QuotaExceededError({
@@ -129,18 +144,34 @@ describe("SessionRunnerRetry.policy", () => {
     Effect.gen(function* () {
       const policy = yield* SessionRunnerRetry.policy(SessionSchema.ID.make("ses_retry"))
       const attempts: Array<{ retry: boolean; delay?: number }> = []
-      for (let i = 0; i < 11; i++) {
+      for (let i = 0; i < 121; i++) {
         const decision = yield* policy(input(freeLimit))
         attempts.push(decision.retry ? { retry: true, delay: decision.delay } : { retry: false })
       }
-      expect(attempts.filter((attempt) => attempt.retry)).toHaveLength(10)
+      expect(attempts.filter((attempt) => attempt.retry)).toHaveLength(120)
       expect(attempts.at(-1)).toEqual({ retry: false })
       // Bounded far below the advertised retry-after, so a step cannot stall for hours.
       expect(attempts.every((attempt) => (attempt.delay ?? 0) <= 300_000)).toBe(true)
-      expect(attempts[0]).toEqual({ retry: true, delay: 20_000 })
-      // Long enough for a rotation that stalls on the provider's address quota (~10 min) to finish.
+      // The attempts follow the address rotation closely: five seconds, before the first one and between the rest.
+      expect(attempts[0]).toEqual({ retry: true, delay: 5_000 })
+      expect(attempts[1]).toEqual({ retry: true, delay: 5_000 })
+      // Ten minutes of five-second gaps cover a rotation that stalls on the provider's address quota.
       const waited = attempts.reduce((total, attempt) => total + (attempt.delay ?? 0), 0)
-      expect(waited).toBeGreaterThan(20 * 60_000)
+      expect(waited).toBe(10 * 60_000)
+    }),
+  )
+
+  // A provider's own rate limit clears on its own schedule, so its gaps keep growing.
+  it.effect("keeps the growing gaps for a provider's own rate limit", () =>
+    Effect.gen(function* () {
+      const policy = yield* SessionRunnerRetry.policy(SessionSchema.ID.make("ses_retry"))
+      const delays: number[] = []
+      for (let i = 0; i < 11; i++) {
+        const decision = yield* policy(input(rateLimit))
+        if (!decision.retry) break
+        delays.push(decision.delay)
+      }
+      expect(delays).toEqual([20_000, 30_000, 45_000, 60_000, 90_000, 120_000, 180_000, 240_000, 300_000, 300_000])
     }),
   )
 

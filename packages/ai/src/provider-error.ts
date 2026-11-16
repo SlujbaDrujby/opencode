@@ -94,15 +94,20 @@ export const isRetryable = (error: AIError) => error.isRetryable
 const FREE_TIER_LIMIT = /free[_\s-]?(?:messages|usage|tier)|freeusagelimit/i
 
 /**
+ * Whether the failure is OpenCode's free tier refusal. Its window clears once the public address
+ * rotates, unlike a provider's own rate limit, which clears on the provider's own schedule.
+ */
+export const isFreeTierLimit = (error: AIError) =>
+  error.reason._tag === "QuotaExceeded" &&
+  // The raw body carries the provider's own code when a route reports the refusal without a message.
+  FREE_TIER_LIMIT.test(`${error.reason.message}\n${error.reason.body ?? ""}`)
+
+/**
  * Whether a failure is a "come back later" throttle that deserves the short retry ladder, even when
  * the provider neither sent a 429 status nor a recognizable rate-limit classification.
  */
 export const isThrottleFailure = (error: AIError) =>
-  error.reason.http?.status === 429 ||
-  error.reason._tag === "RateLimit" ||
-  (error.reason._tag === "QuotaExceeded" &&
-    // The raw body carries the provider's own code when a route reports the refusal without a message.
-    FREE_TIER_LIMIT.test(`${error.reason.message}\n${error.reason.body ?? ""}`))
+  error.reason.http?.status === 429 || error.reason._tag === "RateLimit" || isFreeTierLimit(error)
 
 // OpenCode Zen reports account caps as typed 429/402 errors that are not throttles.
 const QUOTA_CODES = new Set([

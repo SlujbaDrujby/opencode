@@ -1,6 +1,6 @@
 export * as ModelRetry from "./model-retry.js"
 
-import { AIError, isRetryable, isThrottleFailure } from "@opencode/ai/effect"
+import { AIError, isFreeTierLimit, isRetryable, isThrottleFailure } from "@opencode/ai/effect"
 import { Clock, Duration, Effect, Pull, Schedule } from "effect"
 
 interface Input {
@@ -12,18 +12,40 @@ interface Input {
 const RETRY_AFTER_MAX = Duration.toMillis("15 minutes")
 
 // A 429 is transient, but the provider's own retry-after for it can point at the next day
-// while the window actually clears within minutes. Throttled attempts get a short ladder
-// instead, so a step recovers on its own. OpenCode's free tier clears a refusal only after
-// its public IP rotates, which takes about half a minute, so the ladder spans roughly
-// twenty minutes: enough for a rotation that stalls on the provider's address quota plus the
-// client's own retries, without holding a step forever. Overridable for experimentation, in seconds.
+// while the window actually clears within minutes. Throttled attempts get a ladder
+// instead, so a step recovers on its own.
+//
+// OpenCode's free tier reports its per-IP window as a quota error, and that window clears once the
+// public address rotates — which takes about half a minute. Its attempts follow the rotation
+// closely: every 5 seconds, so the one right after the address changes lands within seconds of the
+// new address instead of waiting out a growing gap. The count is what bounds the wait: 120
+// attempts at 5 seconds cover ten minutes, the worst case for a rotation (the server waits up to
+// seven minutes for an OCI address quota, plus the client's own retries).
+//
+// A provider's own rate limit keeps the growing gaps: its window clears on the provider's
+// schedule, and hammering it every few seconds burns the budget that would have let the next
+// attempt through.
+//
+// Overridable for experimentation, in seconds.
 const requestedThrottleDelays = (process.env.OPENCODE_RETRY_429_DELAYS ?? "")
   .split(",")
   .map((value) => Number.parseInt(value.trim(), 10))
   .filter((value) => Number.isInteger(value) && value >= 0)
-const THROTTLE_DELAYS = (
-  requestedThrottleDelays.length ? requestedThrottleDelays : [20, 30, 45, 60, 90, 120, 180, 240, 300, 300]
-).map((seconds) => Duration.toMillis(Duration.seconds(seconds)))
+  .map((seconds) => Duration.toMillis(Duration.seconds(seconds)))
+const requestedFreeTierRetries = Number.parseInt(process.env.OPENCODE_RETRY_429_RETRIES ?? "", 10)
+const FREE_TIER_RETRIES =
+  Number.isInteger(requestedFreeTierRetries) && requestedFreeTierRetries > 0
+    ? Math.min(requestedFreeTierRetries, 600)
+    : 120
+const FREE_TIER_GAP = Duration.toMillis(Duration.seconds(5))
+const THROTTLE_DELAYS = requestedThrottleDelays.length
+  ? requestedThrottleDelays
+  : [20, 30, 45, 60, 90, 120, 180, 240, 300, 300].map((seconds) =>
+      Duration.toMillis(Duration.seconds(seconds)),
+    )
+const FREE_TIER_DELAYS = requestedThrottleDelays.length
+  ? requestedThrottleDelays
+  : Array.from({ length: FREE_TIER_RETRIES }, () => FREE_TIER_GAP)
 
 const retryAfter = (input: Input) => {
   if (input.cause.reason._tag === "RateLimit" || input.cause.reason._tag === "ProviderInternal")
@@ -91,15 +113,18 @@ export const policy = Effect.gen(function* () {
   let attempt = 1
   let timeouts = 0
   let throttles = 0
+  let freeTierThrottles = 0
   return (input: Input) =>
     Effect.gen(function* () {
       // A throttle is transient by definition, so it retries even when the classification calls the
       // failure fatal: the free tier reports its per-IP window as an account quota, and the window
       // clears as soon as the public address rotates. Its own retry-after is ignored on purpose.
       if (isThrottleFailure(input.cause)) {
-        const delay = THROTTLE_DELAYS[throttles]
+        const freeTier = isFreeTierLimit(input.cause)
+        const delay = freeTier ? FREE_TIER_DELAYS[freeTierThrottles] : THROTTLE_DELAYS[throttles]
         if (delay === undefined) return undefined
-        throttles++
+        if (freeTier) freeTierThrottles++
+        else throttles++
         attempt++
         return { attempt, delay, retry: true }
       }
