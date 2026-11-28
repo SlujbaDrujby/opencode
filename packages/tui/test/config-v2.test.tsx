@@ -149,7 +149,7 @@ test("validates terminal copy behavior", () => {
 
   const setting = settings.find((setting) => setting.path.join(".") === "terminal.copy")
   expect(setting?.values).toEqual(["manual", "select"])
-  expect(setting?.default).toBe(process.platform === "win32" ? "manual" : "select")
+  expect(setting?.default).toBe("select")
 })
 
 test("uses command IDs as keybind keys", () => {

@@ -602,8 +602,7 @@ function App() {
     }
   })
 
-  const copyOnSelectEnabled = () =>
-    (config.data.terminal?.copy ?? (process.platform === "win32" ? "manual" : "select")) === "select"
+  const copyOnSelectEnabled = () => (config.data.terminal?.copy ?? "select") === "select"
 
   // Selection copy/dismiss must precede both app bindings and the terminal pane's raw key forwarding.
   const offSelectionKeys = keymap.intercept(

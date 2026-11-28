@@ -89,7 +89,7 @@ export function DevToolsBar() {
       if (!panel() || keymap.mode.current() !== "base") return
       if (event.name !== "escape" && !(event.ctrl && event.name === "c")) return
       if (renderer.getSelection()?.getSelectedText()) {
-        if ((config.data.terminal?.copy ?? (process.platform === "win32" ? "manual" : "select")) !== "select") return
+        if ((config.data.terminal?.copy ?? "select") !== "select") return
         renderer.clearSelection()
         event.preventDefault()
         event.stopPropagation()
